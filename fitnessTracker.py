@@ -2,6 +2,9 @@ import webview
 import threading
 import time
 import random
+import asyncio
+import websockets
+import json
 
 running = True
 
@@ -49,7 +52,6 @@ body {
     box-sizing: border-box;
 }
 
-
 canvas {
     width: 100% !important;
     height: 100% !important;
@@ -71,6 +73,7 @@ canvas {
 </div>
 
 <script>
+
 // ---------------- MAP ----------------
 var map = L.map('map').setView([40.4237, -86.9212], 15);
 
@@ -79,26 +82,45 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
 
 var markers = [];
 var pathCoords = [];
+var lastMarkerLatLng = null;
+var MARKER_DISTANCE_THRESHOLD = 300; // meters (tune this)
 
 var polyline = L.polyline(pathCoords, {
     color: 'blue',
-    weight: 4
+    weight: 4,
+    smoothFactor: 1.0,
+    lineCap: 'round',
+    lineJoin: 'round',
+    renderer: L.svg()
 }).addTo(map);
 
 function updateGPS(lat, lon) {
     var point = [lat, lon];
+    var latlng = L.latLng(lat, lon);
 
-    // add marker
-    var marker = L.marker(point).addTo(map);
-    markers.push(marker);
-
-    // add to path
     pathCoords.push(point);
-
-    // update polyline
     polyline.setLatLngs(pathCoords);
 
-    // optionally follow latest point
+    let shouldAddMarker = false;
+
+    if (!lastMarkerLatLng) {
+        shouldAddMarker = true;
+    } else {
+        const distance = latlng.distanceTo(lastMarkerLatLng); // meters
+        if (distance >= MARKER_DISTANCE_THRESHOLD) {
+            shouldAddMarker = true;
+        }
+    }
+
+    if (shouldAddMarker) {
+        const timestamp = new Date().toLocaleTimeString();
+
+        var marker = L.marker(point).addTo(map).bindPopup(timestamp);
+
+        markers.push(marker);
+        lastMarkerLatLng = latlng;
+    }
+
     map.setView(point);
 }
 
@@ -176,32 +198,44 @@ function updateHR(value) {
 
 # ---------------- PYTHON BACKEND ----------------
 
+async def ws_handler(websocket):
+    async for message in websocket:
+        try:
+            data = json.loads(message)
+
+            lat = data.get("lat")
+            lon = data.get("lon")
+            hr = data.get("hr")
+
+            if lat is not None and lon is not None:
+                window.evaluate_js(f"updateGPS({lat}, {lon});")
+
+            if hr is not None:
+                window.evaluate_js(f"updateHR({hr});")
+
+        except Exception as e:
+            print("Error:", e)
+
+async def ws_main():
+    async with websockets.serve(ws_handler, "0.0.0.0", 8765):
+        print("WebSocket server running on ws://0.0.0.0:8765")
+        await asyncio.Future()  # run forever
+
+def start_ws_server():
+    asyncio.run(ws_main())
+
+
 def on_closed():
     global running
     running = False
 
-def data_loop(window):
-    global running
-
-    lat, lon = 40.4237, -86.9212
-    base_hr = 80
-
-    while running:
-        time.sleep(2)
-
-        lat += 0.0005
-        lon += 0.0005
-
-        hr = base_hr + random.randint(-20, 60)
-
-        window.evaluate_js(f"updateGPS({lat}, {lon});")
-        window.evaluate_js(f"updateHR({hr});")
-
 def start():
+    global window
+
     window = webview.create_window("Fitness Dashboard", html=HTML)
     window.events.closed += on_closed
 
-    threading.Thread(target=data_loop, args=(window,), daemon=True).start()
+    threading.Thread(target=start_ws_server, daemon=True).start()
 
     webview.start()
 
