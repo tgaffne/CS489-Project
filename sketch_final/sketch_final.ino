@@ -44,10 +44,8 @@ typedef struct GPSPoint {
   bool hasFix = false;
 
   char time[16];
-  char latitude[16];
-  char latDir;
-  char longitude[16];
-  char longDir;
+  double latitude;
+  double longitude;
   char date[16];
   float speedMPH;
 } GPSPoint;
@@ -83,6 +81,21 @@ File globalFile;
  * buf: Null terminated string reading from the GPS module
  * dp: GPSPoint struct to be filled with GPS readings
  */
+double convertToDecimal(const char *coord, char direction) {
+    double raw = atof(coord);
+
+    int degrees = (int)(raw / 100);
+    double minutes = raw - (degrees * 100);
+
+    double decimal = degrees + (minutes / 60.0);
+
+    if (direction == 'S' || direction == 'W') {
+        decimal *= -1;
+    }
+
+    return decimal;
+}
+
 void parseNMEA(char *buf, GPSPoint &gps) {
   // For now just do GPGMC
   // Serial.println(buf);
@@ -135,11 +148,8 @@ void parseNMEA(char *buf, GPSPoint &gps) {
   gps.speedMPH = speedKnots * 1.15078;
 
   // Get the coords
-  strncpy(gps.latitude, fields[3], sizeof(gps.latitude));
-  gps.latDir = fields[4][0];
-  
-  strncpy(gps.longitude, fields[5], sizeof(gps.longitude));
-  gps.longDir = fields[6][0];
+  gps.latitude = convertToDecimal(fields[3], fields[4][0]);
+  gps.longitude = convertToDecimal(fields[5], fields[6][0]);
 
   // This one gives date, speed, course, ground speed which GGA doesn't
   // 1 - sentence type, skip and start at [6]
@@ -185,22 +195,6 @@ void readGPS(GPSPoint &gps) {
 
 void collectHR() {
   // Try reading sensor
-  MAX30102.getHeartbeatSPO2();
-
-  int hr = MAX30102._sHeartbeatSPO2.Heartbeat;
-
-  // Basic validity check (adjust range if needed)
-  if (hr <= 0 || hr > 220) {
-    //Serial.println("HR read invalid, attempting reconnect...");
-    hrSensorOK = false;
-  } else {
-    globalHR = hr;
-    hrSensorOK = true;
-    return;
-  }
-
-  // --- Attempt reconnect ---
-  //Serial.println("Reinitializing MAX30102...");
 
   MAX30102.sensorEndCollect();   // stop first (safe even if already stopped)
   delay(100);
@@ -208,10 +202,14 @@ void collectHR() {
   if (MAX30102.begin()) {
     //Serial.println("Reconnected to MAX30102");
     MAX30102.sensorStartCollect();
-    hrSensorOK = true;
+    MAX30102.getHeartbeatSPO2();
+
+    int hr = MAX30102._sHeartbeatSPO2.Heartbeat;
+    if (hr > 0 && hr <= 250) {
+      globalHR = hr;
+    }
   } else {
     //Serial.println("Reconnect failed");
-    hrSensorOK = false;
   }
 }
 
@@ -406,18 +404,16 @@ void loop() {
     String line = "";
 
     // Latitude with N/S
-    line += globalGPS.latitude;
-    line += globalGPS.latDir;
+    line += String(globalGPS.latitude, 5);
     // dont add if struct empty
     line += ",";
 
     // Longitude with E/W
-    line += globalGPS.longitude;
-    line += globalGPS.longDir;
+    line += String(globalGPS.longitude, 5);
     line += ",";
 
     // Speed
-    line += String(globalGPS.speedMPH); 
+    line += String(globalGPS.speedMPH, 3); 
     line += ",";
     // Heart rate
     line += String(globalHR);
