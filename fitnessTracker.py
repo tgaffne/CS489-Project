@@ -7,12 +7,14 @@ import serial
 from datetime import datetime
 
 MAPS_DIR = "maps"
+EOF_MARKER = "END"
 os.makedirs(MAPS_DIR, exist_ok=True)
 
-running = True
 ser = None
-EOF_MARKER = "END"
 
+# UI
+
+# HTML for homescreen
 HOME_HTML = """
 <!DOCTYPE html>
 <html>
@@ -50,6 +52,7 @@ async function openLive() {
     await window.pywebview.api.open_map();
 }
 
+// Function to display the list of old workouts
 async function showMaps() {
     const files = await window.pywebview.api.list_maps();
 
@@ -64,6 +67,7 @@ async function showMaps() {
     });
 }
 
+// Function to open an old workout
 async function openOld(filename) {
     await window.pywebview.api.open_old_map(filename);
 }
@@ -76,6 +80,7 @@ async function openOld(filename) {
 </html>
 """
 
+# HTML for displaying map data
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -83,9 +88,11 @@ HTML = """
 <meta charset="utf-8" />
 <title>Fitness Dashboard</title>
 
+// Leaflet library used for GPS data
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 
+// Chart library used for HR data
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
@@ -98,8 +105,6 @@ body {
     font-family: sans-serif;
 }
 
-
-/* Top half = Map */
 #map {
     height: 70%;
     width: 100%;
@@ -111,7 +116,6 @@ body {
     background: white;
 }
 
-/* Bottom half = Chart */
 #chartContainer {
     height: 30%;
     width: 100%;
@@ -142,6 +146,7 @@ canvas {
 
 <script>
 
+// Function to print data onto UI (GPS on top / HR on bottom)
 function loadMapData(content) {
     const data = JSON.parse(content);
 
@@ -152,14 +157,14 @@ function loadMapData(content) {
 
     if (totalPoints === 0) return;
 
-    const totalReplayTime = 10000; // 20 seconds total
+    // Scale print time relative to number of data points
+    const totalReplayTime = 10000;
     let delay = totalReplayTime / totalPoints;
-
-    // clamp so it doesn't get too fast or too slow
     delay = Math.max(30, Math.min(delay, 500));
 
     let i = 0;
 
+    // Print GPS / HR data from data point by point
     function step() {
         if (data.gps && i < data.gps.length) {
             const p = data.gps[i];
@@ -183,7 +188,7 @@ function loadMapData(content) {
     step();
 }
 
-// ---------------- MAP ----------------
+// Variables and functions for map display
 var map = L.map('map').setView([40.4237, -86.9212], 15);
 
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
@@ -192,8 +197,9 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
 var markers = [];
 var pathCoords = [];
 var lastMarkerLatLng = null;
-var MARKER_DISTANCE_THRESHOLD = 100; // meters (tune this)
+var MARKER_DISTANCE_THRESHOLD = 100; 
 
+// Line between points
 var polyline = L.polyline(pathCoords, {
     color: 'blue',
     weight: 4,
@@ -207,11 +213,13 @@ function updateGPS(lat, lon) {
     var point = [lat, lon];
     var latlng = L.latLng(lat, lon);
 
+    // Draw line to new point
     pathCoords.push(point);
     polyline.setLatLngs(pathCoords);
 
     let shouldAddMarker = false;
 
+    // Add marker based on distance to previous marker
     if (!lastMarkerLatLng) {
         shouldAddMarker = true;
     } else {
@@ -221,6 +229,7 @@ function updateGPS(lat, lon) {
         }
     }
 
+    // Add the marker if heuristic is true
     if (shouldAddMarker) {
         const timestamp = new Date().toLocaleTimeString();
 
@@ -230,10 +239,11 @@ function updateGPS(lat, lon) {
         lastMarkerLatLng = latlng;
     }
 
+    // Center view on new point
     map.setView(point);
 }
 
-// ---------------- HEART RATE ----------------
+// Variables and functions for HR display
 const ctx = document.getElementById('hrChart').getContext('2d');
 
 const data = {
@@ -247,6 +257,7 @@ const data = {
     }]
 };
 
+// Create HR display
 const chart = new Chart(ctx, {
     type: 'line',
     data: data,
@@ -275,28 +286,27 @@ const chart = new Chart(ctx, {
             }
         }
     },
-    plugins: [ChartDataLabels]   // IMPORTANT
+    plugins: [ChartDataLabels]
 });
 
+// Function to update the HR display
 function updateHR(value) {
     const now = new Date().toLocaleTimeString();
 
     data.labels.push(now);
     data.datasets[0].data.push(value);
 
+    // Shift heart rate display when too many points shown
     if (data.labels.length > 15) {
         data.labels.shift();
         data.datasets[0].data.shift();
     }
 
-    // ---- calculate average ----
     const arr = data.datasets[0].data;
     const sum = arr.reduce((a, b) => a + b, 0);
     const avg = Math.round(sum / arr.length);
 
-    // update UI
     document.getElementById("avgHR").innerText = "Avg: " + avg + " BPM";
-
     chart.update();
 }
 </script>
@@ -305,15 +315,16 @@ function updateHR(value) {
 </html>
 """
 
-# ---------------- PYTHON BACKEND ----------------
+# BACKEND
 
 session_data = {
     "gps": [],
     "hr": []
 }
 
+# API used by the HTML UI
 class Api:
-
+    # Helper function to open a map when uploading data
     def open_map(self):
         global map_window, session_data
 
@@ -326,21 +337,23 @@ class Api:
             height=700
         )
 
-        # start session thread
         threading.Thread(
             target=self.run_upload_session,
             kwargs={"port": "COM3", "baud": 115200},
             daemon=True
         ).start()
 
+    # Helper function to list all past workouts saved in MAP directory
     def list_maps(self):
         files = os.listdir(MAPS_DIR)
         return files
 
+    # Helper function to open an old workout saved in the Map directory (from filename)
     def open_old_map(self, filename):
         global map_window
 
         path = os.path.join(MAPS_DIR, filename)
+        print(path)
 
         with open(path, "r") as f:
             content = f.read()
@@ -350,13 +363,13 @@ class Api:
             html=HTML
         )
 
-        # send data after window loads
         def load_data():
             time.sleep(1)
             map_window.evaluate_js(f"loadMapData({json.dumps(content)});")
 
         threading.Thread(target=load_data).start()
 
+    # Helper function to save maps from JSON data
     def save_map(self, content):
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"{timestamp}.json"
@@ -368,103 +381,84 @@ class Api:
 
         return filename
     
+    # Function to interpret GPS / HR data uploaded over serial connection
     def run_upload_session(self, port="COM3", baud=115200):
         global ser, session_data, map_window
 
         ser = None
 
         try:
-            # ----------------------------
-            # OPEN SERIAL CONNECTION
-            # ----------------------------
+            # Attempt serial connection
             ser = serial.Serial(port, baud, timeout=1)
             print(f"[Serial] Connected to {port} @ {baud}")
 
-            # ----------------------------
-            # READ LOOP
-            # ----------------------------
+            # Accept serial data line by line and parse
             while True:
                 line = ser.readline().decode(errors="ignore").strip()
 
                 if not line:
                     continue
 
-                # ----------------------------
-                # EOF STOP CONDITION
-                # ----------------------------
                 if line == EOF_MARKER:
                     print("[Serial] EOF received — ending session")
                     break
 
-                # ----------------------------
-                # PARSE PACKET
-                # ----------------------------
                 parts = line.split(",")
 
                 if len(parts) < 4:
-                    print("[Serial] Bad packet:", line)
+                    print("Bad packet:", line)
                     continue
 
+                # Attempt to parse HR data
                 try:
                     hr = int(parts[3])
                 except Exception as e:
-                    print("[Serial] Parse error:", e, "Line:", line)
+                    print("Parse error:", e, "Line:", line)
                     continue
 
                 session_data["hr"].append(hr)
 
+                # Update HR data
                 if map_window:
                     try:
                         map_window.evaluate_js(f"updateHR({hr});")
                     except Exception as e:
-                        print("[UI] Update failed:", e)
+                        print("Update failed:", e)
                 
+                # Attempt to parse GPS data
                 try:
-                    lat = parse_coord(parts[0])
-                    lon = parse_coord(parts[1])
-                    speed = float(parts[2])
+                    lat = float(parts[0])
+                    lon = float(parts[1])
                 except Exception as e:
-                    print("[Serial] Parse error:", e, "Line:", line)
+                    print("Parse error:", e, "Line:", line)
                     continue
 
-                # ----------------------------
-                # STORE DATA
-                # ----------------------------
                 session_data["gps"].append({"lat": lat, "lon": lon})
 
-                # ----------------------------
-                # UPDATE UI (SAFE)
-                # ----------------------------
+                # Update GPS data
                 if map_window:
                     try:
                         if (lat != 0 and lon != 0):
                             map_window.evaluate_js(f"updateGPS({lat}, {lon});")
                     except Exception as e:
-                        print("[UI] Update failed:", e)
-
-                # Optional debug
-                print(f"[Data] {lat},{lon},{speed},{hr}")
+                        print("Update failed:", e)
 
         except Exception as e:
-            print("[Serial] Connection error:", e)
+            print("Connection error:", e)
 
+        # Close connection once EOF has been recieved
         finally:
-            # ----------------------------
-            # CLEANUP
-            # ----------------------------
             if ser:
                 try:
                     if ser.is_open:
                         ser.close()
                 except Exception as e:
-                    print("[Serial] Close error:", e)
+                    print("Close error:", e)
 
             ser = None
-            print("[Serial] Closed session")
+            print("Closed session")
 
-            # ----------------------------
-            # SAVE SESSION
-            # ----------------------------
+            # Save workout once connection is closed
             if session_data["gps"] or session_data["hr"]:
                 try:
                     api = Api()
@@ -474,38 +468,31 @@ class Api:
                 except Exception as e:
                     print("[Save] Failed:", e)
 
-def parse_coord(value):
-    value = value.strip()
-
-    if value.endswith("N") or value.endswith("E"):
-        return float(value[:-1])
-    elif value.endswith("S") or value.endswith("W"):
-        return -float(value[:-1])
-    else:
-        return float(value)
-
+# Function to define behaviour when a window closes
 def on_closed():
-    global running, ser
+    global ser
 
+    # Close serial connection if user is uploading data
     if ser:
         try:
             ser.close()
         except:
             pass
 
+    # Save GPS / HR data if user has uploaded any
     if session_data["gps"] or session_data["hr"]:
         api = Api()
         content = json.dumps(session_data)
         filename = api.save_map(content)
         print(f"Saved workout to {filename}")
 
-    running = False
-
+# Function to start application
 def start():
     global window
 
     api = Api()
 
+    # Create home window
     window = webview.create_window(
         "Fitness Dashboard",
         html=HOME_HTML,
@@ -514,6 +501,7 @@ def start():
         height=300
     )
 
+    # Save GPS and HR data when the window is closed
     window.events.closed += on_closed
     webview.start()
 
